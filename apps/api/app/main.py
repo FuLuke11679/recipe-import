@@ -42,6 +42,24 @@ def get_db() -> Session:
         yield session
 
 
+@app.get("/")
+def root():
+    return {
+        "name": "Recipe Import API",
+        "version": "0.1.0",
+        "docs": "/docs",
+        "health": "/health",
+        "endpoints": {
+            "POST /imports": "Create a new import job",
+            "GET /imports/{id}": "Get import job details",
+            "POST /imports/{id}/recipe_text": "Submit recipe text",
+            "POST /imports/{id}/extract": "Extract structured recipe",
+            "POST /imports/{id}/adapt": "Adapt recipe with constraints",
+            "GET /imports/{id}/grocery_list": "Get grocery list",
+        },
+    }
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "environment": settings.environment}
