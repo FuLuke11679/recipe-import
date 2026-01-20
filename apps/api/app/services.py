@@ -38,7 +38,7 @@ async def create_import(session: Session, user_id: str, url: str) -> ImportJob:
     job.status = ImportStatus.FETCHING_METADATA
     try:
         metadata = await tiktok_provider.fetch_oembed(url)
-        job.metadata = metadata
+        job.import_metadata = metadata
         job.status = ImportStatus.METADATA_READY
     except Exception as exc:  # noqa: BLE001
         logger.error("metadata_fetch_failed", exc_info=exc)

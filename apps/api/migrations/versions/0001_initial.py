@@ -17,7 +17,7 @@ def upgrade():
         sa.Column("user_id", sa.String(), nullable=False, index=True),
         sa.Column("url", sa.String(), nullable=False, index=True),
         sa.Column("status", sa.Enum("CREATED", "FETCHING_METADATA", "METADATA_READY", "AWAITING_RECIPE_TEXT", "EXTRACTING", "EXTRACTED", "ADAPTING", "ADAPTED", "FAILED", name="importstatus"), nullable=False, server_default="CREATED"),
-        sa.Column("metadata", sa.JSON(), nullable=True),
+        sa.Column("import_metadata", sa.JSON(), nullable=True),
         sa.Column("raw_recipe_text", sa.Text(), nullable=True),
         sa.Column("parsed_recipe", sa.JSON(), nullable=True),
         sa.Column("adapted_recipe", sa.JSON(), nullable=True),

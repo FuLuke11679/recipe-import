@@ -3,7 +3,7 @@ from enum import Enum
 from typing import List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, HttpUrl, validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, validator
 
 
 class ImportStatus(str, Enum):
@@ -65,11 +65,13 @@ class ImportCreateRequest(BaseModel):
 
 
 class ImportResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     user_id: str
     url: HttpUrl
     status: ImportStatus
-    metadata: Optional[dict] = None
+    metadata: Optional[dict] = Field(default=None, alias="import_metadata")
     raw_recipe_text: Optional[str] = None
     parsed_recipe: Optional[Recipe] = None
     adapted_recipe: Optional[Recipe] = None

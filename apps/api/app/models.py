@@ -16,7 +16,7 @@ class ImportJob(Base):
     user_id = Column(String, nullable=False, index=True)
     url = Column(String, nullable=False, index=True)
     status = Column(Enum(ImportStatus), default=ImportStatus.CREATED, nullable=False)
-    metadata = Column(JSON, nullable=True)
+    import_metadata = Column(JSON, nullable=True)
     raw_recipe_text = Column(Text, nullable=True)
     parsed_recipe = Column(JSON, nullable=True)
     adapted_recipe = Column(JSON, nullable=True)
@@ -30,7 +30,7 @@ class ImportJob(Base):
             "user_id": self.user_id,
             "url": self.url,
             "status": self.status.value,
-            "metadata": self.metadata,
+            "metadata": self.import_metadata,
             "raw_recipe_text": self.raw_recipe_text,
             "parsed_recipe": self.parsed_recipe,
             "adapted_recipe": self.adapted_recipe,
