@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "RecipeImport",
+    "slug": "recipe-import",
+    "scheme": "recipeimport",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "platforms": ["android"],
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "updates": {
+      "fallbackToCacheTimeout": 0
+    },
+    "assetBundlePatterns": ["**/*"],
+    "android": {
+      "package": "com.example.recipeimport",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "https",
+              "host": "www.tiktok.com",
+              "pathPrefix": "/"
+            },
+            {
+              "scheme": "recipeimport"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
+    }
+  }
+}
