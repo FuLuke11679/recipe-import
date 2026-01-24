@@ -5,12 +5,7 @@
     "scheme": "recipeimport",
     "version": "0.1.0",
     "orientation": "portrait",
-    "platforms": ["android"],
-    "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
+    "platforms": ["android", "web"],
     "updates": {
       "fallbackToCacheTimeout": 0
     },
@@ -31,6 +26,13 @@
             }
           ],
           "category": ["BROWSABLE", "DEFAULT"]
+        },
+        {
+          "action": "SEND",
+          "data": {
+            "mimeType": "text/plain"
+          },
+          "category": ["DEFAULT"]
         }
       ]
     }

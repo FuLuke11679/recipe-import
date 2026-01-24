@@ -1,79 +1,155 @@
-import React, { useEffect, useState } from "react";
-import { View, Text, FlatList, Button, StyleSheet, TouchableOpacity, Share, Alert, ActivityIndicator } from "react-native";
+import React, { useState } from "react";
+import { View, Text, StyleSheet, ScrollView } from "react-native";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { fetchGroceryList } from "../api/client";
-import { RootStackParamList } from "../../App";
+import { useQuery } from "@tanstack/react-query";
+import * as Sharing from "expo-sharing";
+import { PrimaryButton, SecondaryButton, GroceryListSection, LoadingState, ErrorState } from "../components";
+import { colors, spacing, typography } from "../theme";
+import { getGroceryList } from "../api/client";
 import { GroceryItem } from "../../../packages/shared/types";
+import { RootStackParamList } from "../navigation/types";
 
 type Props = NativeStackScreenProps<RootStackParamList, "GroceryList">;
 
-const GroceryListScreen: React.FC<Props> = ({ route }) => {
+// Group items by category (mock categories for now)
+const groupByCategory = (items: GroceryItem[]): Record<string, GroceryItem[]> => {
+  const grouped: Record<string, GroceryItem[]> = {};
+  items.forEach((item) => {
+    // Mock category assignment - replace with actual category from API
+    const category = "Pantry"; // Default category
+    if (!grouped[category]) {
+      grouped[category] = [];
+    }
+    grouped[category].push(item);
+  });
+  return grouped;
+};
+
+export const GroceryListScreen: React.FC<Props> = ({ route, navigation }) => {
   const { importId } = route.params;
-  const [items, setItems] = useState<GroceryItem[]>([]);
-  const [title, setTitle] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [checkedItems, setCheckedItems] = useState<Set<number>>(new Set());
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const res = await fetchGroceryList(importId);
-        setItems(res.items as GroceryItem[]);
-        setTitle(res.recipe_title);
-      } catch (e: any) {
-        Alert.alert("Failed", e.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
-  }, [importId]);
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["groceryList", importId],
+    queryFn: () => getGroceryList(importId),
+  });
 
-  const toggleItem = (index: number) => {
-    const next = [...items];
-    next[index] = { ...next[index], checked: !next[index].checked };
-    setItems(next);
-  };
+  if (isLoading) {
+    return <LoadingState message="Loading grocery list..." />;
+  }
 
-  const onShare = async () => {
-    const lines = items.map((i) => `${i.checked ? "[x]" : "[ ]"} ${i.name} ${i.quantity ?? ""} ${i.unit ?? ""}`);
-    await Share.share({ message: `${title}\n${lines.join("\n")}` });
-  };
-
-  if (loading) {
+  if (error) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator />
-      </View>
+      <ErrorState
+        message={error?.message || "Failed to load grocery list"}
+        onRetry={() => {}}
+      />
     );
   }
 
+  const items = (data?.items || []) as GroceryItem[];
+  const groupedItems = groupByCategory(items);
+
+  const toggleItem = (category: string, index: number) => {
+    const categoryItems = groupedItems[category];
+    const globalIndex = Object.keys(groupedItems)
+      .slice(0, Object.keys(groupedItems).indexOf(category))
+      .reduce((sum, cat) => sum + groupedItems[cat].length, 0) + index;
+    
+    const newChecked = new Set(checkedItems);
+    if (newChecked.has(globalIndex)) {
+      newChecked.delete(globalIndex);
+    } else {
+      newChecked.add(globalIndex);
+    }
+    setCheckedItems(newChecked);
+  };
+
+  const handleShare = async () => {
+    const lines = items.map((item, idx) => {
+      const checked = checkedItems.has(idx) ? "[x]" : "[ ]";
+      const parts: string[] = [];
+      if (item.quantity) parts.push(String(item.quantity));
+      if (item.unit) parts.push(item.unit);
+      parts.push(item.name);
+      return `${checked} ${parts.join(" ")}`;
+    });
+    const text = `${data?.recipe_title || "Grocery List"}\n\n${lines.join("\n")}`;
+    
+    if (await Sharing.isAvailableAsync()) {
+      await Sharing.shareAsync({ text });
+    }
+  };
+
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>{title || "Grocery list"}</Text>
-      <FlatList
-        data={items}
-        keyExtractor={(_, idx) => idx.toString()}
-        renderItem={({ item, index }) => (
-          <TouchableOpacity style={styles.item} onPress={() => toggleItem(index)}>
-            <Text style={[styles.itemText, item.checked && styles.checked]}>
-              {item.checked ? "☑" : "☐"} {item.name} {item.quantity ?? ""} {item.unit ?? ""}
-            </Text>
-          </TouchableOpacity>
-        )}
-      />
-      <Button title="Share" onPress={onShare} />
+      <View style={styles.header}>
+        <Text style={styles.title}>Grocery List</Text>
+        <Text style={styles.subtitle}>Already have it? Tap to check.</Text>
+      </View>
+      <ScrollView contentContainerStyle={styles.content}>
+        {Object.entries(groupedItems).map(([category, categoryItems]) => {
+          const startIndex = Object.keys(groupedItems)
+            .slice(0, Object.keys(groupedItems).indexOf(category))
+            .reduce((sum, cat) => sum + groupedItems[cat].length, 0);
+          
+          return (
+            <GroceryListSection
+              key={category}
+              title={category}
+              items={categoryItems.map((item, idx) => ({
+                ...item,
+                checked: checkedItems.has(startIndex + idx),
+              }))}
+              onToggleItem={(idx) => toggleItem(category, idx)}
+            />
+          );
+        })}
+      </ScrollView>
+      <View style={styles.buttonContainer}>
+        <View style={styles.backButton}>
+          <SecondaryButton
+            title="Back to Recipe"
+            onPress={() => navigation.goBack()}
+          />
+        </View>
+        <PrimaryButton title="Share list" onPress={handleShare} />
+      </View>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: "#fff" },
-  title: { fontSize: 18, fontWeight: "700", marginBottom: 12 },
-  item: { paddingVertical: 8 },
-  itemText: { fontSize: 16 },
-  checked: { textDecorationLine: "line-through", color: "#777" },
-  center: { flex: 1, alignItems: "center", justifyContent: "center" },
+  container: {
+    flex: 1,
+    backgroundColor: colors.backgroundSubtle,
+  },
+  header: {
+    backgroundColor: colors.white,
+    padding: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  title: {
+    ...typography.title,
+    marginBottom: spacing.xs,
+  },
+  subtitle: {
+    ...typography.secondary,
+  },
+  content: {
+    padding: spacing.lg,
+  },
+  buttonContainer: {
+    padding: spacing.lg,
+    paddingTop: spacing.md,
+    backgroundColor: colors.white,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  backButton: {
+    marginBottom: spacing.sm,
+  },
 });
 
 export default GroceryListScreen;
-

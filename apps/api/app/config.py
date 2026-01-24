@@ -5,7 +5,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="APP_", case_sensitive=False)
+    # Don't use env_file - rely on environment variables from Docker/OS
+    # Docker Compose loads .env file and passes vars as environment variables
+    model_config = SettingsConfigDict(env_prefix="APP_", case_sensitive=False)
 
     db_user: str = "postgres"
     db_password: str = "postgres"
@@ -16,6 +18,8 @@ class Settings(BaseSettings):
     sentry_dsn: Optional[str] = None
     posthog_key: Optional[str] = None
     posthog_host: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    scrapecreators_api_key: Optional[str] = None
     environment: str = "local"
     testing: bool = False
 

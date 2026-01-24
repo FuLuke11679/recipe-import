@@ -1,8 +1,8 @@
 import logging
-from typing import Annotated
+from typing import Annotated, List
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Path
+from fastapi import Depends, FastAPI, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -56,6 +56,7 @@ def root():
             "POST /imports/{id}/extract": "Extract structured recipe",
             "POST /imports/{id}/adapt": "Adapt recipe with constraints",
             "GET /imports/{id}/grocery_list": "Get grocery list",
+            "GET /recipes?user_id={id}": "List all extracted recipes for a user",
         },
     }
 
@@ -65,14 +66,34 @@ def health():
     return {"status": "ok", "environment": settings.environment}
 
 
+@app.get("/recipes", response_model=List[ImportResponse])
+def list_recipes(
+    user_id: Annotated[str, Query()],
+    session: Annotated[Session, Depends(get_db)],
+):
+    """List all extracted recipes for a user."""
+    from sqlalchemy import select
+    
+    stmt = (
+        select(ImportJob)
+        .where(ImportJob.user_id == user_id)
+        .where(ImportJob.parsed_recipe.isnot(None))
+        .order_by(ImportJob.created_at.desc())
+    )
+    jobs = session.execute(stmt).scalars().all()
+    return list(jobs)
+
+
 @app.post("/imports", response_model=ImportResponse)
 async def create_import_endpoint(payload: ImportCreateRequest, session: Annotated[Session, Depends(get_db)]):
     try:
         job = await create_import(session, payload.user_id, str(payload.url))
+        session.commit()  # Explicitly commit before refresh
         session.refresh(job)
         capture_event("import_created", user_id=payload.user_id, properties={"id": str(job.id)})
         return job
     except Exception as exc:  # noqa: BLE001
+        session.rollback()
         capture_exception(exc)
         raise
 
@@ -93,11 +114,13 @@ def post_recipe_text(
 ):
     try:
         job = attach_recipe_text(session, import_id, payload.text)
+        session.commit()
         session.refresh(job)
+        capture_event("recipe_text_submitted", properties={"import_id": str(import_id)})
         return job
     except ValueError as exc:
+        session.rollback()
         raise HTTPException(status_code=400, detail=str(exc))
-    capture_event("recipe_text_submitted", properties={"import_id": str(import_id)})
 
 
 @app.post("/imports/{import_id}/extract", response_model=ImportResponse)
@@ -108,11 +131,20 @@ def extract_endpoint(
 ):
     try:
         job = extract_recipe(session, import_id)
+        session.commit()
         session.refresh(job)
+        logger.info("recipe_extracted_success", extra={"import_id": str(import_id), "has_recipe": bool(job.parsed_recipe)})
+        capture_event("recipe_extracted", properties={"import_id": str(import_id)})
         return job
     except ValueError as exc:
+        session.rollback()
+        logger.error("extract_failed_value_error", extra={"import_id": str(import_id), "error": str(exc)})
         raise HTTPException(status_code=400, detail=str(exc))
-    capture_event("recipe_extracted", properties={"import_id": str(import_id)})
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        logger.error("extract_failed_unexpected", extra={"import_id": str(import_id), "error": str(exc)}, exc_info=exc)
+        capture_exception(exc)
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(exc)}")
 
 
 @app.post("/imports/{import_id}/adapt", response_model=ImportResponse)
@@ -123,11 +155,13 @@ def adapt_endpoint(
 ):
     try:
         job = adapt_recipe(session, import_id, payload.constraints)
+        session.commit()
         session.refresh(job)
+        capture_event("recipe_adapted", properties={"import_id": str(import_id)})
         return job
     except ValueError as exc:
+        session.rollback()
         raise HTTPException(status_code=400, detail=str(exc))
-    capture_event("recipe_adapted", properties={"import_id": str(import_id)})
 
 
 @app.get("/imports/{import_id}/grocery_list", response_model=GroceryListResponse)
@@ -140,4 +174,3 @@ def grocery_list(import_id: Annotated[UUID, Path()], session: Annotated[Session,
         return GroceryListResponse(items=items, recipe_title=job.parsed_recipe.get("title") if job.parsed_recipe else "")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-
