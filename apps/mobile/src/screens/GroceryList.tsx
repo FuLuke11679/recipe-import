@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import { View, Text, StyleSheet, ScrollView } from "react-native";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useFocusEffect } from "@react-navigation/native";
 import * as Sharing from "expo-sharing";
 import { PrimaryButton, SecondaryButton, GroceryListSection, LoadingState, ErrorState } from "../components";
 import { colors, spacing, typography } from "../theme";
@@ -28,11 +29,21 @@ const groupByCategory = (items: GroceryItem[]): Record<string, GroceryItem[]> =>
 export const GroceryListScreen: React.FC<Props> = ({ route, navigation }) => {
   const { importId } = route.params;
   const [checkedItems, setCheckedItems] = useState<Set<number>>(new Set());
+  const queryClient = useQueryClient();
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["groceryList", importId],
     queryFn: () => getGroceryList(importId),
+    staleTime: 0, // Always consider data stale to allow refetching
+    refetchOnWindowFocus: true, // Refetch when screen comes into focus
   });
+
+  // Refresh grocery list when screen comes into focus (in case recipe was updated)
+  useFocusEffect(
+    React.useCallback(() => {
+      refetch();
+    }, [refetch])
+  );
 
   if (isLoading) {
     return <LoadingState message="Loading grocery list..." />;

@@ -9,7 +9,6 @@ import * as Linking from "expo-linking";
 import * as Clipboard from "expo-clipboard";
 import { PrimaryButton, TextInputField, EmptyState, LoadingState } from "../components";
 import { colors, spacing, typography } from "../theme";
-import { useAnonId } from "../hooks/useAnonId";
 import { listRecipes } from "../api/client";
 import { RootStackParamList } from "../navigation/types";
 import { TabParamList } from "../navigation/TabNavigator";
@@ -46,23 +45,21 @@ const formatDate = (dateString: string): string => {
 };
 
 export const HomeScreen: React.FC<Props> = ({ navigation }) => {
-  const userId = useAnonId();
   const [url, setUrl] = useState("");
 
-  // Fetch recipes for this user
+  // Fetch recipes for authenticated user
   const { data: recipes, isLoading: recipesLoading, refetch: refetchRecipes } = useQuery({
-    queryKey: ["recipes", userId],
-    queryFn: () => listRecipes(userId || ""),
-    enabled: !!userId,
+    queryKey: ["recipes"],
+    queryFn: () => listRecipes(),
+    staleTime: 0, // Always consider data stale to allow refetching
+    refetchOnWindowFocus: true, // Refetch when screen comes into focus
   });
 
   // Refresh recipes when screen comes into focus
   useFocusEffect(
     React.useCallback(() => {
-      if (userId) {
-        refetchRecipes();
-      }
-    }, [userId, refetchRecipes])
+      refetchRecipes();
+    }, [refetchRecipes])
   );
 
   useEffect(() => {
@@ -113,11 +110,8 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       return;
     }
 
-    if (!userId) {
-      return;
-    }
-
     // Navigate to ImportPreview with URL
+    // Authentication is handled automatically by the API client
     navigation.navigate("ImportPreview", { url: effectiveUrl });
   };
 
@@ -157,8 +151,11 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
               data={recipes}
               keyExtractor={(item) => item.id}
               renderItem={({ item }) => {
+                // Only show recipes that have been extracted
                 const recipe = item.adapted_recipe || item.parsed_recipe;
-                const title = recipe?.title || "Untitled Recipe";
+                if (!recipe) return null;
+                
+                const title = recipe.title || "Untitled Recipe";
                 return (
                   <TouchableOpacity
                     style={styles.recentItem}
@@ -170,11 +167,6 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                     <Text style={styles.recentItemDate}>
                       {formatDate(item.created_at)}
                     </Text>
-                    {recipe?.ingredients && (
-                      <Text style={styles.recentItemIngredients}>
-                        {recipe.ingredients.length} ingredient{recipe.ingredients.length !== 1 ? "s" : ""}
-                      </Text>
-                    )}
                   </TouchableOpacity>
                 );
               }}
@@ -243,11 +235,6 @@ const styles = StyleSheet.create({
   },
   recentItemDate: {
     ...typography.caption,
-    marginBottom: spacing.xs,
-  },
-  recentItemIngredients: {
-    ...typography.caption,
-    color: colors.primary,
   },
 });
 

@@ -4,7 +4,6 @@ import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PrimaryButton, LoadingState, ErrorState } from "../components";
 import { colors, spacing, typography } from "../theme";
-import { useAnonId } from "../hooks/useAnonId";
 import { createImport, getImport } from "../api/client";
 import { RootStackParamList } from "../navigation/types";
 
@@ -12,13 +11,12 @@ type Props = NativeStackScreenProps<RootStackParamList, "ImportPreview">;
 
 export const ImportPreviewScreen: React.FC<Props> = ({ route, navigation }) => {
   const { url, importId: initialImportId } = route.params;
-  const userId = useAnonId();
   const queryClient = useQueryClient();
   const [currentImportId, setCurrentImportId] = useState<string | null>(initialImportId || null);
 
   // Create import if we have URL but no importId
   const createMutation = useMutation({
-    mutationFn: ({ userId, url }: { userId: string; url: string }) => createImport({ userId, url }),
+    mutationFn: ({ url }: { url: string }) => createImport({ url }),
     onSuccess: (data) => {
       setCurrentImportId(data.id);
       queryClient.invalidateQueries({ queryKey: ["import", data.id] });
@@ -41,14 +39,14 @@ export const ImportPreviewScreen: React.FC<Props> = ({ route, navigation }) => {
   });
 
   useEffect(() => {
-    if (url && !currentImportId && userId) {
-      createMutation.mutate({ userId, url });
+    if (url && !currentImportId) {
+      createMutation.mutate({ url });
     }
-  }, [url, userId]);
+  }, [url, currentImportId]);
 
   const handleImport = () => {
-    if (url && userId && !currentImportId) {
-      createMutation.mutate({ userId, url });
+    if (url && !currentImportId) {
+      createMutation.mutate({ url });
     }
   };
 
@@ -57,12 +55,14 @@ export const ImportPreviewScreen: React.FC<Props> = ({ route, navigation }) => {
   }
 
   if (error || createMutation.isError) {
+    const errorMessage = error?.message || createMutation.error?.message || "Failed to import recipe";
+    console.error("ImportPreview error:", errorMessage, createMutation.error);
     return (
       <ErrorState
-        message={error?.message || "Failed to import recipe"}
+        message={errorMessage}
         onRetry={() => {
-          if (url && userId) {
-            createMutation.mutate({ userId, url });
+          if (url) {
+            createMutation.mutate({ url });
           }
         }}
       />
