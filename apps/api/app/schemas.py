@@ -61,7 +61,7 @@ class Constraints(BaseModel):
 
 class ImportCreateRequest(BaseModel):
     url: HttpUrl
-    user_id: str
+    # user_id is now taken from authenticated user, not from request
 
 
 class ImportResponse(BaseModel):
@@ -95,4 +95,32 @@ class AdaptRequest(BaseModel):
 class GroceryListResponse(BaseModel):
     items: List[GroceryItem]
     recipe_title: str
+
+
+# Authentication schemas
+class UserRegister(BaseModel):
+    email: str
+    username: str
+    password: str
+
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class UserResponse(BaseModel):
+    id: UUID
+    email: str
+    username: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
