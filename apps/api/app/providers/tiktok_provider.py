@@ -91,61 +91,128 @@ async def fetch_oembed(url: str) -> Dict:
     # Resolve shortened URLs first
     resolved_url = await _resolve_shortened_url(url)
     
-    # Extract handle from resolved URL
+    # Extract handle and video ID from resolved URL
     handle = _extract_handle_from_url(resolved_url)
     video_id = _extract_video_id_from_url(resolved_url)
     
-    if not handle:
-        logger.warning("could_not_extract_handle", extra={"url": url, "resolved_url": resolved_url, "fallback": "mock"})
-        print(f"WARNING: Could not extract handle from URL: {url}", file=sys.stderr, flush=True)
-        print(f"Resolved URL: {resolved_url}", file=sys.stderr, flush=True)
-        return {
-            "title": "Mock TikTok video",
-            "author_name": "chef_bot",
-            "provider_name": "tiktok",
-            "description": "",
-            "caption": "",
-            "thumbnail_url": None,
-            "html": "",
-            "fallback": True,
-        }
-
-    # scrapecreators API endpoint for profile videos
-    endpoint = "https://api.scrapecreators.com/v3/tiktok/profile/videos"
     headers = {
         "x-api-key": settings.scrapecreators_api_key,
-    }
-    params = {
-        "handle": handle,
-        "sort_by": "latest",
     }
 
     import sys
     print(f"Making API request to scrapecreators...", file=sys.stderr, flush=True)
-    print(f"Endpoint: {endpoint}", file=sys.stderr, flush=True)
+    print(f"URL: {url}", file=sys.stderr, flush=True)
+    print(f"Resolved URL: {resolved_url}", file=sys.stderr, flush=True)
     print(f"Handle: {handle}", file=sys.stderr, flush=True)
+    print(f"Video ID: {video_id}", file=sys.stderr, flush=True)
     print(f"Headers: x-api-key present: {bool(headers.get('x-api-key'))}", file=sys.stderr, flush=True)
+
+    video_data = None
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(endpoint, params=params, headers=headers)
-            print(f"API Response Status: {resp.status_code}", file=sys.stderr, flush=True)
-            resp.raise_for_status()
-            data = resp.json()
-            print(f"API Response received, aweme_list length: {len(data.get('aweme_list', []))}", file=sys.stderr, flush=True)
+            # If we have a video_id (meaning we have a full video URL), try the v2 video-specific endpoint first
+            # The v2 endpoint accepts the full URL and returns the specific video
+            if video_id and resolved_url:
+                video_endpoint = "https://api.scrapecreators.com/v2/tiktok/video"
+                video_params = {"url": resolved_url}
+                print(f"Attempting video-specific endpoint: {video_endpoint} with url={resolved_url}", file=sys.stderr, flush=True)
+                
+                try:
+                    resp = await client.get(video_endpoint, params=video_params, headers=headers)
+                    print(f"Video endpoint Response Status: {resp.status_code}", file=sys.stderr, flush=True)
+                    
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        print(f"Video endpoint response keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}", file=sys.stderr, flush=True)
+                        
+                        # v2 endpoint returns data in aweme_detail field
+                        if isinstance(data, dict) and "aweme_detail" in data:
+                            video_data = data["aweme_detail"]
+                            # Validate that we got actual video data
+                            if video_data and (isinstance(video_data, dict) and ("aweme_id" in video_data or "desc" in video_data)):
+                                print(f"Successfully fetched video data from v2 video endpoint (aweme_detail)", file=sys.stderr, flush=True)
+                            else:
+                                print(f"WARNING: v2 endpoint returned aweme_detail but it's empty/invalid, will fall back", file=sys.stderr, flush=True)
+                                video_data = None
+                        elif isinstance(data, dict) and ("aweme_id" in data or "desc" in data):
+                            # If structure is different but has video data directly
+                            video_data = data
+                            print(f"Successfully fetched video data from v2 video endpoint (direct)", file=sys.stderr, flush=True)
+                        else:
+                            # Response structure doesn't match expected format
+                            print(f"WARNING: v2 endpoint returned 200 but unexpected structure: {type(data)}, will fall back", file=sys.stderr, flush=True)
+                            video_data = None
+                    else:
+                        error_text = resp.text[:200] if hasattr(resp, 'text') else str(resp.status_code)
+                        print(f"Video endpoint returned {resp.status_code}: {error_text}, will fall back to profile endpoint", file=sys.stderr, flush=True)
+                except Exception as video_exc:  # noqa: BLE001
+                    print(f"Video endpoint failed: {str(video_exc)}, falling back to profile endpoint", file=sys.stderr, flush=True)
+                    logger.warning("video_endpoint_failed", extra={"error": str(video_exc), "video_id": video_id, "url": resolved_url})
 
-        # Find the matching video in aweme_list
-        video_data = None
-        if "aweme_list" in data and isinstance(data["aweme_list"], list):
-            if video_id:
-                # Try to find video by matching video ID
-                for video in data["aweme_list"]:
-                    if str(video.get("aweme_id")) == video_id or video.get("url", "").endswith(video_id):
-                        video_data = video
-                        break
-            # If not found by ID, use first video (most recent)
-            if not video_data and data["aweme_list"]:
-                video_data = data["aweme_list"][0]
+            # If video-specific endpoint didn't work or we don't have video_id, use profile endpoint
+            if not video_data:
+                if not handle:
+                    logger.warning("could_not_extract_handle", extra={"url": url, "resolved_url": resolved_url, "fallback": "mock"})
+                    print(f"WARNING: Could not extract handle from URL: {url}", file=sys.stderr, flush=True)
+                    print(f"Resolved URL: {resolved_url}", file=sys.stderr, flush=True)
+                    return {
+                        "title": "Mock TikTok video",
+                        "author_name": "chef_bot",
+                        "provider_name": "tiktok",
+                        "description": "",
+                        "caption": "",
+                        "thumbnail_url": None,
+                        "html": "",
+                        "fallback": True,
+                    }
+
+                # scrapecreators API endpoint for profile videos (v3 uses hyphen, not slash)
+                endpoint = "https://api.scrapecreators.com/v3/tiktok/profile-videos"
+                params = {
+                    "handle": handle,
+                    "sort_by": "latest",
+                }
+                # Increase amount to get more videos to search through
+                if video_id:
+                    params["amount"] = 50  # Get more videos to increase chance of finding the specific one
+                
+                print(f"Using profile endpoint: {endpoint} with handle={handle}, amount={params.get('amount', 'default')}", file=sys.stderr, flush=True)
+                
+                resp = await client.get(endpoint, params=params, headers=headers)
+                print(f"Profile endpoint Response Status: {resp.status_code}", file=sys.stderr, flush=True)
+                resp.raise_for_status()
+                data = resp.json()
+                print(f"API Response received, aweme_list length: {len(data.get('aweme_list', []))}", file=sys.stderr, flush=True)
+
+                # Find the matching video in aweme_list by aweme_id
+                if "aweme_list" in data and isinstance(data["aweme_list"], list):
+                    if video_id:
+                        print(f"Searching {len(data['aweme_list'])} videos for video_id: {video_id}", file=sys.stderr, flush=True)
+                        # Try to find video by matching aweme_id (the video ID from URL)
+                        for idx, video in enumerate(data["aweme_list"]):
+                            # Match by aweme_id field (the actual field name in the API response)
+                            video_aweme_id = str(video.get("aweme_id", ""))
+                            if video_aweme_id == video_id:
+                                video_data = video
+                                print(f"✅ Found matching video in profile list by aweme_id at index {idx}: {video_id}", file=sys.stderr, flush=True)
+                                break
+                            # Also check if URL contains the video ID
+                            video_url = video.get("url", "") or video.get("share_url", "") or video.get("video_url", "")
+                            if video_id in str(video_url):
+                                video_data = video
+                                print(f"✅ Found matching video in profile list by URL match at index {idx}: {video_id}", file=sys.stderr, flush=True)
+                                break
+                            # Debug: log first few video IDs for troubleshooting
+                            if idx < 5:
+                                print(f"  Video {idx}: aweme_id={video_aweme_id}, url={str(video_url)[:80] if video_url else 'N/A'}", file=sys.stderr, flush=True)
+                    # If not found by ID, DO NOT use first video - this causes the wrong video bug!
+                    if not video_data and data["aweme_list"]:
+                        print(f"❌ ERROR: Video ID {video_id} not found in profile list (searched {len(data['aweme_list'])} videos)", file=sys.stderr, flush=True)
+                        first_video_id = data["aweme_list"][0].get("aweme_id", "N/A")
+                        print(f"   First video in list has aweme_id: {first_video_id} (this would be wrong!)", file=sys.stderr, flush=True)
+                        # Don't use the wrong video - let it fall through to return mock/error
+                        # This prevents the bug where we use the latest video instead of the specific one
 
         if not video_data:
             logger.warning("video_not_found_in_response", extra={"url": url, "handle": handle, "fallback": "mock"})
@@ -160,6 +227,15 @@ async def fetch_oembed(url: str) -> Dict:
                 "fallback": True,
             }
 
+        # Handle both video-specific endpoint response and profile endpoint response
+        # Video endpoint returns the video object directly, profile endpoint returns aweme_list
+        if isinstance(video_data, dict) and "aweme_id" in video_data:
+            # This is already a video object (from profile endpoint or video endpoint)
+            pass
+        elif isinstance(video_data, dict) and "data" in video_data:
+            # Video endpoint might wrap the data
+            video_data = video_data.get("data", video_data)
+        
         # Extract caption from desc field
         caption = video_data.get("desc", "").strip()
         author_info = video_data.get("author", {})
