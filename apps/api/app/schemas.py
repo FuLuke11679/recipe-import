@@ -36,6 +36,17 @@ class Step(BaseModel):
     instruction: str
 
 
+class Nutrition(BaseModel):
+    calories_per_serving: Optional[float] = None
+    total_calories: Optional[float] = None
+    protein_g: Optional[float] = None
+    carbohydrates_g: Optional[float] = None
+    fat_g: Optional[float] = None
+    fiber_g: Optional[float] = None
+    sugar_g: Optional[float] = None
+    sodium_mg: Optional[float] = None
+
+
 class Recipe(BaseModel):
     title: str
     ingredients: List[Ingredient]
@@ -43,6 +54,8 @@ class Recipe(BaseModel):
     servings: Optional[int] = None
     total_time_minutes: Optional[int] = None
     source_url: Optional[str] = None
+    nutrition: Optional[Nutrition] = None
+    rating: Optional[float] = Field(default=None, ge=0, le=5, description="User rating from 0 to 5")
 
 
 class GroceryItem(BaseModel):
@@ -57,6 +70,8 @@ class Constraints(BaseModel):
     max_time: Optional[int] = Field(default=None, description="Max cook time in minutes")
     servings: Optional[int] = None
     allergies: Optional[str] = None
+    max_calories_per_serving: Optional[int] = Field(default=None, description="Max calories per serving")
+    min_protein_g: Optional[float] = Field(default=None, description="Minimum protein in grams per serving")
 
 
 class ImportCreateRequest(BaseModel):
@@ -90,11 +105,16 @@ class ExtractRequest(BaseModel):
 
 class AdaptRequest(BaseModel):
     constraints: Constraints
+    create_new: bool = False
 
 
 class GroceryListResponse(BaseModel):
     items: List[GroceryItem]
     recipe_title: str
+
+
+class RatingRequest(BaseModel):
+    rating: float = Field(ge=0, le=5, description="Rating from 0 to 5")
 
 
 # Authentication schemas

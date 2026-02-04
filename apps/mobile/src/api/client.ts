@@ -64,7 +64,28 @@ async function request<T>(path: string, options?: RequestInit, requireAuth: bool
     console.error(`Request failed: ${resp.status} ${path}`, text);
     throw new Error(text || `Request failed: ${resp.status}`);
   }
-  return resp.json() as Promise<T>;
+
+  // Handle empty responses (e.g. 204 No Content)
+  if (resp.status === 204) {
+    return undefined as unknown as T;
+  }
+
+  const contentType = resp.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    const text = await resp.text();
+    // If body is empty, treat as undefined; otherwise return as any
+    if (!text) {
+      return undefined as unknown as T;
+    }
+    return text as unknown as T;
+  }
+
+  // If JSON but empty body, avoid crashing
+  const raw = await resp.text();
+  if (!raw) {
+    return undefined as unknown as T;
+  }
+  return JSON.parse(raw) as T;
 }
 
 // Authentication endpoints
@@ -136,8 +157,11 @@ export async function extractRecipe(importId: string): Promise<ImportJob> {
   return request<ImportJob>(`/imports/${importId}/extract`, { method: "POST", body: JSON.stringify({}) });
 }
 
-export async function adaptRecipe(importId: string, constraints: Constraints): Promise<ImportJob> {
-  return request<ImportJob>(`/imports/${importId}/adapt`, { method: "POST", body: JSON.stringify({ constraints }) });
+export async function adaptRecipe(importId: string, constraints: Constraints, createNew: boolean = false): Promise<ImportJob> {
+  return request<ImportJob>(`/imports/${importId}/adapt`, { 
+    method: "POST", 
+    body: JSON.stringify({ constraints, create_new: createNew }) 
+  });
 }
 
 export async function getGroceryList(importId: string): Promise<{ items: any[]; recipe_title: string }> {
@@ -156,6 +180,24 @@ export async function listRecipes(): Promise<ImportJob[]> {
     console.error("API: Error fetching recipes:", error);
     throw error;
   }
+}
+
+export async function deleteRecipe(recipeId: string): Promise<void> {
+  await request<void>(`/recipes/${recipeId}`, { method: "DELETE" });
+}
+
+export async function createManualRecipe(text: string): Promise<ImportJob> {
+  return request<ImportJob>("/manual_recipes", {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  });
+}
+
+export async function updateRecipeRating(importId: string, rating: number): Promise<ImportJob> {
+  return request<ImportJob>(`/imports/${importId}/rating`, {
+    method: "POST",
+    body: JSON.stringify({ rating }),
+  });
 }
 
 export function hasRecipe(job?: ImportJob | null): job is ImportJob & { parsed_recipe: Recipe } {

@@ -3,8 +3,10 @@ import { View, Text, StyleSheet, ScrollView, FlatList, TouchableOpacity } from "
 import { CompositeNavigationProp } from "@react-navigation/native";
 import { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { useFocusEffect } from "@react-navigation/native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Linking from "expo-linking";
 import * as Clipboard from "expo-clipboard";
 import { PrimaryButton, TextInputField, EmptyState, LoadingState } from "../components";
@@ -45,6 +47,7 @@ const formatDate = (dateString: string): string => {
 };
 
 export const HomeScreen: React.FC<Props> = ({ navigation }) => {
+  const insets = useSafeAreaInsets();
   const [url, setUrl] = useState("");
 
   // Fetch recipes for authenticated user
@@ -124,23 +127,25 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
         <Text style={styles.headerTitle}>Cooked</Text>
+        <TouchableOpacity
+          style={styles.profileButton}
+          onPress={() => navigation.navigate("Profile")}
+        >
+          <Ionicons name="cog" size={24} color={colors.textPrimary} />
+        </TouchableOpacity>
       </View>
       <ScrollView contentContainerStyle={styles.content}>
+        <Text style={styles.sectionTitle}>Import Recipe</Text>
         <TextInputField
-          placeholder="Paste TikTok link"
+          placeholder="Paste TikTok URL here..."
           value={url}
           onChangeText={setUrl}
           autoCapitalize="none"
           autoCorrect={false}
         />
-        <View style={styles.dividerContainer}>
-          <View style={styles.dividerLine} />
-          <Text style={styles.dividerText}>or</Text>
-          <View style={styles.dividerLine} />
-        </View>
-        <PrimaryButton title="Import from TikTok" onPress={() => handleImport()} />
+        <PrimaryButton title="Import" onPress={() => handleImport()} />
         
         <View style={styles.recentSection}>
           <Text style={styles.sectionTitle}>My Recipes</Text>
@@ -188,31 +193,22 @@ const styles = StyleSheet.create({
   },
   header: {
     backgroundColor: colors.white,
-    paddingTop: spacing.xl,
     paddingBottom: spacing.md,
     paddingHorizontal: spacing.lg,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
   },
   headerTitle: {
     ...typography.title,
   },
+  profileButton: {
+    padding: spacing.xs,
+  },
   content: {
     padding: spacing.lg,
-  },
-  dividerContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginVertical: spacing.md,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: colors.border,
-  },
-  dividerText: {
-    ...typography.secondary,
-    marginHorizontal: spacing.md,
   },
   recentSection: {
     marginTop: spacing.xl,

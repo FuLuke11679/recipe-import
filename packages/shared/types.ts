@@ -21,6 +21,17 @@ export type Step = {
   instruction: string;
 };
 
+export type Nutrition = {
+  calories_per_serving?: number | null;
+  total_calories?: number | null;
+  protein_g?: number | null;
+  carbohydrates_g?: number | null;
+  fat_g?: number | null;
+  fiber_g?: number | null;
+  sugar_g?: number | null;
+  sodium_mg?: number | null;
+};
+
 export type Recipe = {
   title: string;
   ingredients: Ingredient[];
@@ -28,6 +39,8 @@ export type Recipe = {
   servings?: number | null;
   total_time_minutes?: number | null;
   source_url?: string | null;
+  nutrition?: Nutrition | null;
+  rating?: number | null;
 };
 
 export type GroceryItem = {
@@ -42,6 +55,8 @@ export type Constraints = {
   max_time?: number | null;
   servings?: number | null;
   allergies?: string | null;
+  max_calories_per_serving?: number | null;
+  min_protein_g?: number | null;
 };
 
 export type ImportJob = {

@@ -4,7 +4,7 @@ import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useFocusEffect } from "@react-navigation/native";
 import * as Sharing from "expo-sharing";
-import { PrimaryButton, SecondaryButton, GroceryListSection, LoadingState, ErrorState } from "../components";
+import { PrimaryButton, SecondaryButton, GroceryListSection, LoadingState, ErrorState, ScreenHeader } from "../components";
 import { colors, spacing, typography } from "../theme";
 import { getGroceryList } from "../api/client";
 import { GroceryItem } from "../../../packages/shared/types";
@@ -94,11 +94,9 @@ export const GroceryListScreen: React.FC<Props> = ({ route, navigation }) => {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Grocery List</Text>
-        <Text style={styles.subtitle}>Already have it? Tap to check.</Text>
-      </View>
+      <ScreenHeader title="Grocery List" onBack={() => navigation.goBack()} />
       <ScrollView contentContainerStyle={styles.content}>
+        <Text style={styles.subtitle}>Already have it? Tap to check.</Text>
         {Object.entries(groupedItems).map(([category, categoryItems]) => {
           const startIndex = Object.keys(groupedItems)
             .slice(0, Object.keys(groupedItems).indexOf(category))
@@ -135,25 +133,16 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.backgroundSubtle,
   },
-  header: {
-    backgroundColor: colors.white,
-    padding: spacing.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  title: {
-    ...typography.title,
-    marginBottom: spacing.xs,
-  },
   subtitle: {
     ...typography.secondary,
+    marginBottom: spacing.md,
   },
   content: {
     padding: spacing.lg,
   },
   buttonContainer: {
-    padding: spacing.lg,
-    paddingTop: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
     backgroundColor: colors.white,
     borderTopWidth: 1,
     borderTopColor: colors.border,

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Image, ActivityIndicator } from "react-native";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PrimaryButton, LoadingState, ErrorState } from "../components";
+import { PrimaryButton, LoadingState, ErrorState, ScreenHeader } from "../components";
 import { colors, spacing, typography } from "../theme";
 import { createImport, getImport } from "../api/client";
 import { RootStackParamList } from "../navigation/types";
@@ -87,7 +87,9 @@ export const ImportPreviewScreen: React.FC<Props> = ({ route, navigation }) => {
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <View style={styles.container}>
+      <ScreenHeader title="Import Recipe" onBack={() => navigation.goBack()} />
+      <ScrollView contentContainerStyle={styles.content}>
       {thumbnailUrl ? (
         <Image source={{ uri: thumbnailUrl }} style={styles.thumbnail} resizeMode="cover" />
       ) : (
@@ -137,7 +139,7 @@ export const ImportPreviewScreen: React.FC<Props> = ({ route, navigation }) => {
           ) : (
             <PrimaryButton
               title="Paste recipe"
-              onPress={() => navigation.navigate("PasteRecipe", { importId: job.id })}
+              onPress={() => navigation.navigate("PasteRecipe", { importId: job.id, mode: "import" })}
             />
           )
         ) : (
@@ -152,7 +154,8 @@ export const ImportPreviewScreen: React.FC<Props> = ({ route, navigation }) => {
       {job?.url && (
         <Text style={styles.urlText}>{job.url}</Text>
       )}
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 };
 

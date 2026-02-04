@@ -2,10 +2,10 @@ import React, { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Alert } from "react-native";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { CommonActions } from "@react-navigation/native";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { PrimaryButton, ChipToggle, TextInputField, SectionHeader, LoadingState, Stepper } from "../components";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { PrimaryButton, ChipToggle, TextInputField, SectionHeader, LoadingState, Stepper, ScreenHeader } from "../components";
 import { colors, spacing, typography } from "../theme";
-import { adaptRecipe } from "../api/client";
+import { adaptRecipe, getImport } from "../api/client";
 import { useOnboardingStore } from "../state/onboardingStore";
 import { RootStackParamList } from "../navigation/types";
 
@@ -16,41 +16,73 @@ const TIME_OPTIONS = [15, 30, 45];
 
 export const AdaptScreen: React.FC<Props> = ({ route, navigation }) => {
   const { importId } = route.params;
-  const { diet: savedDiet, maxTime: savedMaxTime } = useOnboardingStore();
+  const { 
+    diet: savedDiet, 
+    maxTime: savedMaxTime, 
+    allergies: savedAllergies,
+    customAllergies: savedCustomAllergies,
+    setDiet,
+    setMaxTime,
+  } = useOnboardingStore();
   const queryClient = useQueryClient();
-  const [diet, setDiet] = useState<string | null>(savedDiet || "None");
-  const [maxTime, setMaxTime] = useState<number | null>(savedMaxTime);
+  
+  // Fetch the original recipe to include it
+  const { data: originalJob } = useQuery({
+    queryKey: ["import", importId],
+    queryFn: () => getImport(importId),
+  });
+
+  const [diet, setDietLocal] = useState<string | null>(savedDiet || "None");
+  const [maxTime, setMaxTimeLocal] = useState<number | null>(savedMaxTime);
   const [servings, setServings] = useState<number>(4); // Default to 4 servings
-  const [allergies, setAllergies] = useState<string>("");
+  const [allergies, setAllergies] = useState<string>(
+    [...savedAllergies, ...savedCustomAllergies].join(", ")
+  );
+  const [maxCalories, setMaxCalories] = useState<string>("");
+  const [minProtein, setMinProtein] = useState<string>("");
 
   const adaptMutation = useMutation({
-    mutationFn: (constraints: any) => adaptRecipe(importId, constraints),
-    onSuccess: (data) => {
+    mutationFn: ({ constraints, createNew }: { constraints: any; createNew: boolean }) => 
+      adaptRecipe(importId, constraints, createNew),
+    onSuccess: (data, variables) => {
       // Verify the recipe was saved by checking it has adapted_recipe
       if (!data.adapted_recipe && !data.parsed_recipe) {
         Alert.alert("Error", "Recipe adaptation failed. Please try again.");
         return;
       }
       
+      // Save settings to onboarding store
+      if (diet) setDiet(diet);
+      if (maxTime !== null) setMaxTime(maxTime);
+      
       // Update the import query cache
       queryClient.setQueryData(["import", importId], data);
+      // If creating new recipe, also update the new recipe's cache
+      if (variables.createNew && data.id !== importId) {
+        queryClient.setQueryData(["import", data.id], data);
+      }
       // Invalidate recipes list to refresh both Home and Recipes tab
       queryClient.invalidateQueries({ queryKey: ["recipes"] });
       // Refetch grocery list immediately since it's generated from the recipe
-      queryClient.refetchQueries({ queryKey: ["groceryList", importId] });
+      const recipeId = variables.createNew ? data.id : importId;
+      queryClient.refetchQueries({ queryKey: ["groceryList", recipeId] });
       
       const recipe = data.adapted_recipe || data.parsed_recipe;
       const recipeTitle = recipe?.title || "Recipe";
       
-      // Show success message with verification
+      // Show success message
       Alert.alert(
         "Recipe Adapted ✓",
-        `${recipeTitle} has been adapted and saved to your recipe list.`,
+        `${recipeTitle} has been ${variables.createNew ? "created as a new recipe" : "updated"} and saved to your recipe list.`,
         [
           {
             text: "View Recipe",
             onPress: () => {
-              navigation.goBack();
+              if (variables.createNew && data.id !== importId) {
+                navigation.replace("RecipeView", { importId: data.id });
+              } else {
+                navigation.goBack();
+              }
             },
           },
           {
@@ -58,10 +90,8 @@ export const AdaptScreen: React.FC<Props> = ({ route, navigation }) => {
             onPress: () => {
               // Navigate directly to Recipes tab, resetting the navigation stack
               try {
-                // Get the root navigator
                 const rootNavigator = navigation.getParent()?.getParent();
                 if (rootNavigator) {
-                  // Reset navigation to MainTabs with Recipes screen
                   rootNavigator.dispatch(
                     CommonActions.reset({
                       index: 0,
@@ -77,7 +107,6 @@ export const AdaptScreen: React.FC<Props> = ({ route, navigation }) => {
                     })
                   );
                 } else {
-                  // Fallback: navigate normally
                   navigation.getParent()?.navigate("MainTabs", {
                     screen: "Recipes",
                   });
@@ -85,7 +114,6 @@ export const AdaptScreen: React.FC<Props> = ({ route, navigation }) => {
                 }
               } catch (e) {
                 console.log("Navigation error:", e);
-                // Fallback: just go back
                 navigation.goBack();
               }
             },
@@ -103,13 +131,46 @@ export const AdaptScreen: React.FC<Props> = ({ route, navigation }) => {
   });
 
   const handleApply = () => {
-    const constraints = {
-      diet: diet?.toLowerCase().replace(" / ", "-").replace(" ", "-") || "none",
-      max_time: maxTime,
-      servings: servings || null,
-      allergies: allergies || null,
-    };
-    adaptMutation.mutate(constraints);
+    // Ask user if they want to create a new recipe or replace the current one
+    Alert.alert(
+      "Save Adapted Recipe",
+      "Would you like to create a new recipe or replace the current one?",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Create New Recipe",
+          onPress: () => {
+            const constraints = {
+              diet: diet?.toLowerCase().replace(" / ", "-").replace(" ", "-") || "none",
+              max_time: maxTime,
+              servings: servings || null,
+              allergies: allergies || null,
+              max_calories_per_serving: maxCalories ? parseInt(maxCalories, 10) : null,
+              min_protein_g: minProtein ? parseFloat(minProtein) : null,
+            };
+            adaptMutation.mutate({ constraints, createNew: true });
+          },
+        },
+        {
+          text: "Replace Current",
+          style: "destructive",
+          onPress: () => {
+            const constraints = {
+              diet: diet?.toLowerCase().replace(" / ", "-").replace(" ", "-") || "none",
+              max_time: maxTime,
+              servings: servings || null,
+              allergies: allergies || null,
+              max_calories_per_serving: maxCalories ? parseInt(maxCalories, 10) : null,
+              min_protein_g: minProtein ? parseFloat(minProtein) : null,
+            };
+            adaptMutation.mutate({ constraints, createNew: false });
+          },
+        },
+      ]
+    );
   };
 
   if (adaptMutation.isPending) {
@@ -118,6 +179,7 @@ export const AdaptScreen: React.FC<Props> = ({ route, navigation }) => {
 
   return (
     <View style={styles.container}>
+      <ScreenHeader title="Adapt Recipe" onBack={() => navigation.goBack()} />
       <ScrollView contentContainerStyle={styles.content}>
         <SectionHeader title="Diet" />
         <View style={styles.chipsContainer}>
@@ -126,7 +188,7 @@ export const AdaptScreen: React.FC<Props> = ({ route, navigation }) => {
               key={option}
               label={option}
               selected={diet === option}
-              onPress={() => setDiet(diet === option ? null : option)}
+              onPress={() => setDietLocal(diet === option ? null : option)}
             />
           ))}
         </View>
@@ -138,7 +200,7 @@ export const AdaptScreen: React.FC<Props> = ({ route, navigation }) => {
               key={time}
               label={`${time} min`}
               selected={maxTime === time}
-              onPress={() => setMaxTime(maxTime === time ? null : time)}
+              onPress={() => setMaxTimeLocal(maxTime === time ? null : time)}
             />
           ))}
         </View>
@@ -159,6 +221,22 @@ export const AdaptScreen: React.FC<Props> = ({ route, navigation }) => {
           placeholder="Enter allergies (comma-separated)"
           value={allergies}
           onChangeText={setAllergies}
+        />
+
+        <SectionHeader title="Nutrition Goals" />
+        <TextInputField
+          label="Max calories per serving"
+          placeholder="e.g., 500"
+          value={maxCalories}
+          onChangeText={setMaxCalories}
+          keyboardType="numeric"
+        />
+        <TextInputField
+          label="Min protein per serving (g)"
+          placeholder="e.g., 20"
+          value={minProtein}
+          onChangeText={setMinProtein}
+          keyboardType="numeric"
         />
       </ScrollView>
       
@@ -192,8 +270,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   buttonContainer: {
-    padding: spacing.lg,
-    paddingTop: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
     backgroundColor: colors.white,
     borderTopWidth: 1,
     borderTopColor: colors.border,

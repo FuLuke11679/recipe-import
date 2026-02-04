@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timedelta
 from typing import List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -109,10 +109,11 @@ def extract_recipe(session: Session, job_id: UUID) -> ImportJob:
     if not job:
         raise ValueError("Import not found")
     
-    # Collect recipe text from multiple sources: caption, transcript, and raw_recipe_text
+    # Collect recipe text from multiple sources: caption, transcript, on-screen text, and raw_recipe_text
     metadata = job.import_metadata or {}
     caption = metadata.get("caption") or metadata.get("description") or ""
     transcript = metadata.get("transcript") or ""
+    on_screen_text = metadata.get("on_screen_text") or ""  # Text written on the video
     raw_text = job.raw_recipe_text or ""
     
     # Combine all sources for better extraction
@@ -121,11 +122,13 @@ def extract_recipe(session: Session, job_id: UUID) -> ImportJob:
         combined_text_parts.append(f"CAPTION:\n{caption}")
     if transcript:
         combined_text_parts.append(f"TRANSCRIPT:\n{transcript}")
-    if raw_text and raw_text not in [caption, transcript]:
+    if on_screen_text:
+        combined_text_parts.append(f"ON-SCREEN TEXT (Written on Video):\n{on_screen_text}")
+    if raw_text and raw_text not in [caption, transcript, on_screen_text]:
         combined_text_parts.append(f"RECIPE TEXT:\n{raw_text}")
     
     if not combined_text_parts:
-        raise ValueError("No recipe text available (need caption, transcript, or raw_recipe_text)")
+        raise ValueError("No recipe text available (need caption, transcript, on-screen text, or raw_recipe_text)")
     
     combined_text = "\n\n".join(combined_text_parts)
     
@@ -133,6 +136,7 @@ def extract_recipe(session: Session, job_id: UUID) -> ImportJob:
         "job_id": str(job_id),
         "has_caption": bool(caption),
         "has_transcript": bool(transcript),
+        "has_on_screen_text": bool(on_screen_text),
         "has_raw_text": bool(raw_text),
         "combined_length": len(combined_text)
     })
@@ -146,11 +150,23 @@ def extract_recipe(session: Session, job_id: UUID) -> ImportJob:
         logger.info("recipe_extracted_from_llm", extra={
             "job_id": str(job_id),
             "has_title": "title" in parsed_dict,
-            "ingredients_count": len(parsed_dict.get("ingredients", []))
+            "ingredients_count": len(parsed_dict.get("ingredients", [])),
+            "has_nutrition": "nutrition" in parsed_dict and parsed_dict.get("nutrition") is not None,
+            "nutrition_data": parsed_dict.get("nutrition")
         })
         
         recipe = Recipe.model_validate(parsed_dict)
-        job.parsed_recipe = recipe.model_dump()
+        
+        # Debug: Print what's being saved
+        import sys
+        print(f"\n{'='*60}", file=sys.stderr, flush=True)
+        print(f"SAVING TO DATABASE:", file=sys.stderr, flush=True)
+        print(f"Recipe nutrition before dump: {recipe.nutrition}", file=sys.stderr, flush=True)
+        recipe_dump = recipe.model_dump()
+        print(f"Recipe nutrition in dump: {recipe_dump.get('nutrition')}", file=sys.stderr, flush=True)
+        print(f"{'='*60}\n", file=sys.stderr, flush=True)
+        
+        job.parsed_recipe = recipe_dump
         job.status = ImportStatus.EXTRACTED
         session.flush()  # Make recipe data visible immediately
         
@@ -168,20 +184,65 @@ def extract_recipe(session: Session, job_id: UUID) -> ImportJob:
         raise
 
 
-def adapt_recipe(session: Session, job_id: UUID, constraints: Constraints) -> ImportJob:
-    job = session.get(ImportJob, job_id)
-    if not job or not job.parsed_recipe:
+def create_manual_recipe(session: Session, user_id: str, text: str) -> ImportJob:
+    """Create a new ImportJob for a manual recipe and immediately extract it."""
+    if not text.strip():
+        raise ValueError("Recipe text cannot be empty")
+
+    # Use a synthetic URL to satisfy the non-null constraint while marking it as manual
+    synthetic_url = f"manual://{user_id}/{datetime.utcnow().isoformat()}"
+    job = ImportJob(user_id=user_id, url=synthetic_url, status=ImportStatus.CREATED)
+    session.add(job)
+    session.flush()  # Ensure job.id is available
+
+    # Attach the raw recipe text and extract
+    attach_recipe_text(session, job.id, text)
+    job = extract_recipe(session, job.id)
+    return job
+
+
+def adapt_recipe(session: Session, job_id: UUID, constraints: Constraints, create_new: bool = False) -> ImportJob:
+    original_job = session.get(ImportJob, job_id)
+    if not original_job or not original_job.parsed_recipe:
         raise ValueError("Import not extracted")
-    recipe = Recipe.model_validate(job.parsed_recipe)
-    job.status = ImportStatus.ADAPTING
-    session.flush()  # Make status change visible immediately
+    recipe = Recipe.model_validate(original_job.parsed_recipe)
+    
+    # Adapt the recipe
+    if not create_new:
+        # Set status to adapting only if we're replacing
+        original_job.status = ImportStatus.ADAPTING
+        session.flush()  # Make status change visible immediately
+    
     adapted_dict, summary = llm_provider.adapt_recipe(recipe, constraints)
     adapted = Recipe.model_validate(adapted_dict)
-    job.adapted_recipe = adapted.model_dump()
-    job.change_summary = summary
-    job.status = ImportStatus.ADAPTED
-    session.flush()  # Make adapted recipe visible immediately
-    return job
+    
+    if create_new:
+        # Create a new ImportJob with the adapted recipe
+        # Include original recipe in parsed_recipe field
+        new_job = ImportJob(
+            id=uuid4(),
+            user_id=original_job.user_id,
+            url=original_job.url,
+            status=ImportStatus.ADAPTED,
+            import_metadata=original_job.import_metadata,
+            raw_recipe_text=original_job.raw_recipe_text,
+            parsed_recipe=original_job.parsed_recipe,  # Include original recipe
+            adapted_recipe=adapted.model_dump(),
+            change_summary=summary,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        session.add(new_job)
+        session.flush()
+        # Don't modify the original job when creating new
+        return new_job
+    else:
+        # Replace the current recipe
+        original_job.adapted_recipe = adapted.model_dump()
+        original_job.change_summary = summary
+        original_job.status = ImportStatus.ADAPTED
+        session.flush()  # Make adapted recipe visible immediately
+        return original_job
 
 
 def build_grocery_list(job: ImportJob) -> List[GroceryItem]:

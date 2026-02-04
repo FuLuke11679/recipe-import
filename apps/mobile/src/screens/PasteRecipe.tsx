@@ -4,22 +4,31 @@ import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useMutation } from "@tanstack/react-query";
 import { PrimaryButton, TextInputField, LoadingState, ErrorState } from "../components";
 import { colors, spacing, typography } from "../theme";
-import { submitRecipeText, extractRecipe } from "../api/client";
+import { submitRecipeText, extractRecipe, createManualRecipe } from "../api/client";
 import { RootStackParamList } from "../navigation/types";
 
 type Props = NativeStackScreenProps<RootStackParamList, "PasteRecipe">;
 
 export const PasteRecipeScreen: React.FC<Props> = ({ route, navigation }) => {
-  const { importId } = route.params;
+  const { importId, mode } = route.params || {};
+  const isManual = mode === "manual" || !importId;
   const [text, setText] = useState("");
 
   const submitMutation = useMutation({
     mutationFn: async (recipeText: string) => {
+      if (isManual) {
+        // Create a brand new manual recipe for the current user
+        return await createManualRecipe(recipeText);
+      }
+      if (!importId) {
+        throw new Error("Import ID is required for import mode.");
+      }
       await submitRecipeText(importId, recipeText);
       return await extractRecipe(importId);
     },
-    onSuccess: () => {
-      navigation.replace("RecipeView", { importId });
+    onSuccess: (job) => {
+      const id = importId || job.id;
+      navigation.replace("RecipeView", { importId: id });
     },
   });
 
@@ -44,8 +53,14 @@ export const PasteRecipeScreen: React.FC<Props> = ({ route, navigation }) => {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>Couldn't find ingredients automatically.</Text>
-      <Text style={styles.body}>Paste what you see or hear from the video.</Text>
+      <Text style={styles.title}>
+        {isManual ? "Create a new recipe" : "Couldn't find ingredients automatically."}
+      </Text>
+      <Text style={styles.body}>
+        {isManual
+          ? "Paste any recipe text to turn it into a Cooked recipe."
+          : "Paste what you see or hear from the video."}
+      </Text>
       <TextInputField
         placeholder="Paste recipe text here..."
         value={text}

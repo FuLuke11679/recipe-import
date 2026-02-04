@@ -1,11 +1,12 @@
 import React from "react";
-import { View, Text, StyleSheet, ScrollView, Alert } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Alert, Linking, TouchableOpacity } from "react-native";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { CommonActions } from "@react-navigation/native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { PrimaryButton, SecondaryButton, RecipeIngredientsList, RecipeStepsList, LoadingState, ErrorState, CollapsibleSection } from "../components";
+import { Ionicons } from "@expo/vector-icons";
+import { PrimaryButton, SecondaryButton, RecipeIngredientsList, RecipeStepsList, LoadingState, ErrorState, CollapsibleSection, ScreenHeader, NutritionInfo, StarRating } from "../components";
 import { colors, spacing, typography } from "../theme";
-import { extractRecipe, getImport } from "../api/client";
+import { extractRecipe, getImport, updateRecipeRating } from "../api/client";
 import { RootStackParamList } from "../navigation/types";
 
 type Props = NativeStackScreenProps<RootStackParamList, "RecipeView">;
@@ -25,6 +26,37 @@ export const RecipeViewScreen: React.FC<Props> = ({ route, navigation }) => {
       return false;
     },
   });
+
+  // Get recipe early so we can use it in hooks
+  const recipe = job?.adapted_recipe || job?.parsed_recipe;
+  
+  // Rating state - initialize from recipe (must be before any conditional returns)
+  const [currentRating, setCurrentRating] = React.useState<number>(
+    recipe?.rating || 0
+  );
+  
+  // Update rating when recipe changes
+  React.useEffect(() => {
+    if (recipe?.rating !== undefined && recipe.rating !== null) {
+      setCurrentRating(recipe.rating);
+    }
+  }, [recipe?.rating]);
+  
+  const ratingMutation = useMutation({
+    mutationFn: (rating: number) => updateRecipeRating(importId, rating),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["import", importId], data);
+      const updatedRecipe = data.adapted_recipe || data.parsed_recipe;
+      if (updatedRecipe?.rating !== undefined && updatedRecipe.rating !== null) {
+        setCurrentRating(updatedRecipe.rating);
+      }
+    },
+  });
+  
+  const handleRatingChange = (rating: number) => {
+    setCurrentRating(rating);
+    ratingMutation.mutate(rating);
+  };
 
   const extractMutation = useMutation({
     mutationFn: () => extractRecipe(importId),
@@ -79,33 +111,24 @@ export const RecipeViewScreen: React.FC<Props> = ({ route, navigation }) => {
             onPress: () => {
               // Navigate directly to Recipes tab
               try {
-                const rootNavigator = navigation.getParent()?.getParent();
-                if (rootNavigator) {
-                  // Reset navigation to MainTabs with Recipes screen
-                  rootNavigator.dispatch(
-                    CommonActions.reset({
-                      index: 0,
-                      routes: [
-                        {
-                          name: "MainTabs",
-                          state: {
-                            routes: [{ name: "Recipes" }],
-                            index: 0,
-                          },
-                        },
-                      ],
-                    })
-                  );
-                } else {
-                  // Fallback: navigate normally
-                  navigation.navigate("MainTabs", {
-                    screen: "Recipes",
-                  });
+                // Get the parent navigator (should be MainTabs)
+                const parentNavigator = navigation.getParent();
+                
+                // If we have a parent navigator, navigate to Recipes tab within it
+                if (parentNavigator) {
+                  parentNavigator.navigate("Recipes");
+                }
+                
+                // Then go back to remove RecipeView from stack
+                if (navigation.canGoBack()) {
                   navigation.goBack();
                 }
               } catch (e) {
                 console.log("Navigation error:", e);
-                navigation.navigate("MainTabs");
+                // Fallback: just go back
+                if (navigation.canGoBack()) {
+                  navigation.goBack();
+                }
               }
             },
           },
@@ -152,16 +175,23 @@ export const RecipeViewScreen: React.FC<Props> = ({ route, navigation }) => {
   const metadata = job?.metadata as Record<string, any> | null;
   const caption = metadata?.caption || metadata?.description || "";
   const transcript = metadata?.transcript || "";
-
-  const recipe = job?.adapted_recipe || job?.parsed_recipe;
+  const onScreenText = metadata?.on_screen_text || "";
+  const authorName = metadata?.author_name || null;
+  
+  // Debug logging
+  if (recipe) {
+    console.log("RecipeView: Recipe nutrition data:", JSON.stringify(recipe.nutrition, null, 2));
+  }
+  
   if (!recipe) {
     return (
       <View style={styles.container}>
+        <ScreenHeader title="Recipe" onBack={() => navigation.goBack()} />
         <ScrollView contentContainerStyle={styles.content}>
           <Text style={styles.title}>Recipe not extracted yet</Text>
           <Text style={styles.subtitle}>We’ve pulled the TikTok details below. Extract the recipe when you’re ready.</Text>
 
-          {(caption || transcript || job?.raw_recipe_text) && (
+          {(caption || transcript || onScreenText || job?.raw_recipe_text) && (
             <CollapsibleSection title="Video Details" defaultCollapsed={true}>
               {caption && (
                 <View style={styles.textBlock}>
@@ -171,8 +201,14 @@ export const RecipeViewScreen: React.FC<Props> = ({ route, navigation }) => {
               )}
               {transcript && (
                 <View style={styles.textBlock}>
-                  <Text style={styles.blockTitle}>Transcript</Text>
+                  <Text style={styles.blockTitle}>Transcript (Spoken Audio)</Text>
                   <Text style={styles.blockBody}>{transcript}</Text>
+                </View>
+              )}
+              {onScreenText && (
+                <View style={styles.textBlock}>
+                  <Text style={styles.blockTitle}>On-Screen Text (Written on Video)</Text>
+                  <Text style={styles.blockBody}>{onScreenText}</Text>
                 </View>
               )}
               {job?.raw_recipe_text && !caption && (
@@ -203,11 +239,47 @@ export const RecipeViewScreen: React.FC<Props> = ({ route, navigation }) => {
 
   return (
     <View style={styles.container}>
+      <ScreenHeader title="Recipe" onBack={() => navigation.goBack()} />
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.title}>{recipe.title}</Text>
-        <Text style={styles.subtitle}>Adapted for you</Text>
+        <View style={styles.titleRow}>
+          <Text style={styles.title}>{recipe.title}</Text>
+          <StarRating
+            rating={Math.round(currentRating)}
+            onRatingChange={handleRatingChange}
+            editable={true}
+            size={20}
+          />
+        </View>
+        {job?.adapted_recipe && <Text style={styles.subtitle}>Adapted for you</Text>}
+        
+        {/* Creator */}
+        {authorName && (
+          <View style={styles.creatorInfo}>
+            <Ionicons name="person-circle-outline" size={18} color={colors.textSecondary} />
+            <Text style={styles.creatorText}>@{authorName}</Text>
+          </View>
+        )}
+        
+        {job?.url && (
+          <TouchableOpacity
+            style={styles.videoLink}
+            onPress={() => {
+              Linking.openURL(job.url).catch((err) => {
+                console.error("Failed to open URL:", err);
+                Alert.alert("Error", "Could not open video link");
+              });
+            }}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="play-circle" size={20} color={colors.primary} />
+            <Text style={styles.videoLinkText}>Watch Original Video</Text>
+            <Ionicons name="open-outline" size={16} color={colors.textSecondary} />
+          </TouchableOpacity>
+        )}
+        
+        <NutritionInfo nutrition={recipe.nutrition} servings={recipe.servings} />
 
-        {(caption || transcript) && (
+        {(caption || transcript || onScreenText) && (
           <CollapsibleSection title="Video Details" defaultCollapsed={true}>
             {caption && (
               <View style={styles.textBlock}>
@@ -217,8 +289,14 @@ export const RecipeViewScreen: React.FC<Props> = ({ route, navigation }) => {
             )}
             {transcript && (
               <View style={styles.textBlock}>
-                <Text style={styles.blockTitle}>Transcript</Text>
+                <Text style={styles.blockTitle}>Transcript (Spoken Audio)</Text>
                 <Text style={styles.blockBody}>{transcript}</Text>
+              </View>
+            )}
+            {onScreenText && (
+              <View style={styles.textBlock}>
+                <Text style={styles.blockTitle}>On-Screen Text (Written on Video)</Text>
+                <Text style={styles.blockBody}>{onScreenText}</Text>
               </View>
             )}
           </CollapsibleSection>
@@ -269,33 +347,24 @@ export const RecipeViewScreen: React.FC<Props> = ({ route, navigation }) => {
             title="Back to Recipes"
             onPress={() => {
               try {
-                const rootNavigator = navigation.getParent()?.getParent();
-                if (rootNavigator) {
-                  // Reset navigation to MainTabs with Recipes screen
-                  rootNavigator.dispatch(
-                    CommonActions.reset({
-                      index: 0,
-                      routes: [
-                        {
-                          name: "MainTabs",
-                          state: {
-                            routes: [{ name: "Recipes" }],
-                            index: 0,
-                          },
-                        },
-                      ],
-                    })
-                  );
-                } else {
-                  // Fallback: navigate normally
-                  navigation.navigate("MainTabs", {
-                    screen: "Recipes",
-                  });
+                // Get the parent navigator (should be MainTabs)
+                const parentNavigator = navigation.getParent();
+                
+                // If we have a parent navigator, navigate to Recipes tab within it
+                if (parentNavigator) {
+                  parentNavigator.navigate("Recipes");
+                }
+                
+                // Then go back to remove RecipeView from stack
+                if (navigation.canGoBack()) {
                   navigation.goBack();
                 }
               } catch (e) {
                 console.log("Navigation error:", e);
-                navigation.navigate("MainTabs");
+                // Fallback: just go back
+                if (navigation.canGoBack()) {
+                  navigation.goBack();
+                }
               }
             }}
           />
@@ -314,22 +383,57 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     paddingBottom: spacing.xxl,
   },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: spacing.xs,
+    gap: spacing.md,
+  },
   title: {
     ...typography.title,
-    marginBottom: spacing.xs,
+    flex: 1,
   },
   subtitle: {
     ...typography.secondary,
     color: colors.primary,
-    marginBottom: spacing.lg,
+    marginBottom: spacing.md,
   },
-  summaryContainer: {
+  creatorInfo: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  creatorText: {
+    ...typography.body,
+    color: colors.textPrimary,
+    fontWeight: "500",
+  },
+  videoLink: {
+    flexDirection: "row",
+    alignItems: "center",
     backgroundColor: colors.white,
     padding: spacing.md,
-    borderRadius: 14,
-    marginBottom: spacing.lg,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: colors.border,
+    marginBottom: spacing.lg,
+    gap: spacing.sm,
+  },
+  videoLinkText: {
+    ...typography.body,
+    color: colors.primary,
+    fontWeight: "600",
+    flex: 1,
+  },
+  summaryContainer: {
+    backgroundColor: colors.backgroundSubtle,
+    padding: spacing.md,
+    borderRadius: 4,
+    marginBottom: spacing.lg,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary,
   },
   summaryTitle: {
     ...typography.section,
@@ -340,8 +444,8 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xs,
   },
   buttonContainer: {
-    padding: spacing.lg,
-    paddingTop: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
     backgroundColor: colors.white,
     borderTopWidth: 1,
     borderTopColor: colors.border,

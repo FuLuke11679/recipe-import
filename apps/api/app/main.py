@@ -16,13 +16,14 @@ from .schemas import (
     GroceryListResponse,
     ImportCreateRequest,
     ImportResponse,
+    RatingRequest,
     RecipeTextRequest,
     Token,
     UserLogin,
     UserRegister,
     UserResponse,
 )
-from .services import adapt_recipe, attach_recipe_text, build_grocery_list, create_import, extract_recipe
+from .services import adapt_recipe, attach_recipe_text, build_grocery_list, create_import, extract_recipe, create_manual_recipe
 from .telemetry import capture_event, capture_exception
 from .auth import (
     authenticate_user,
@@ -164,6 +165,24 @@ def list_recipes(
     return list(jobs)
 
 
+@app.delete("/recipes/{recipe_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_recipe(
+    recipe_id: UUID,
+    session: Annotated[Session, Depends(get_db)],
+    current_user: User = Depends(get_current_active_user),
+):
+    """Delete a recipe (underlying import job) for the current user."""
+    job = session.get(ImportJob, recipe_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recipe not found")
+    if job.user_id != str(current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to delete this recipe")
+
+    session.delete(job)
+    session.commit()
+    return None
+
+
 @app.post("/imports", response_model=ImportResponse)
 async def create_import_endpoint(
     payload: ImportCreateRequest,
@@ -223,6 +242,31 @@ def post_recipe_text(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@app.post("/manual_recipes", response_model=ImportResponse, status_code=status.HTTP_201_CREATED)
+def create_manual_recipe_endpoint(
+    payload: RecipeTextRequest,
+    session: Annotated[Session, Depends(get_db)],
+    current_user: User = Depends(get_current_active_user),
+):
+    """Create a new manual recipe from pasted text for the current user."""
+    try:
+        job = create_manual_recipe(session, str(current_user.id), payload.text)
+        session.commit()
+        session.refresh(job)
+        capture_event(
+            "manual_recipe_created",
+            properties={"import_id": str(job.id), "user_id": str(current_user.id)},
+        )
+        return job
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        capture_exception(exc)
+        raise
+
+
 @app.post("/imports/{import_id}/extract", response_model=ImportResponse)
 def extract_endpoint(
     import_id: UUID,
@@ -263,10 +307,14 @@ def adapt_endpoint(
         if job.user_id != str(current_user.id):
             raise HTTPException(status_code=403, detail="Not authorized to access this import")
         
-        job = adapt_recipe(session, import_id, payload.constraints)
+        job = adapt_recipe(session, import_id, payload.constraints, payload.create_new)
         session.commit()
         session.refresh(job)
-        capture_event("recipe_adapted", properties={"import_id": str(import_id)})
+        capture_event("recipe_adapted", properties={
+            "import_id": str(import_id),
+            "create_new": payload.create_new,
+            "new_recipe_id": str(job.id) if payload.create_new else None,
+        })
         return job
     except ValueError as exc:
         session.rollback()
@@ -290,3 +338,51 @@ def grocery_list(
         return GroceryListResponse(items=items, recipe_title=job.parsed_recipe.get("title") if job.parsed_recipe else "")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/imports/{import_id}/rating", response_model=ImportResponse)
+def update_rating(
+    import_id: UUID,
+    payload: RatingRequest,
+    session: Annotated[Session, Depends(get_db)],
+    current_user: User = Depends(get_current_active_user),
+):
+    """Update the rating for a recipe."""
+    job = session.get(ImportJob, import_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Import not found")
+    # Verify the job belongs to the current user
+    if job.user_id != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Not authorized to access this import")
+    
+    # Update rating in the adapted recipe if it exists, otherwise in parsed recipe
+    recipe_data = job.adapted_recipe or job.parsed_recipe
+    if not recipe_data:
+        raise HTTPException(status_code=400, detail="Recipe not extracted yet")
+    
+    # Create a copy and update the rating (SQLAlchemy needs a new dict to detect changes)
+    import copy
+    updated_recipe_data = copy.deepcopy(recipe_data)
+    updated_recipe_data["rating"] = payload.rating
+    
+    # Save back to the appropriate field (assign new dict to trigger SQLAlchemy change detection)
+    if job.adapted_recipe:
+        job.adapted_recipe = updated_recipe_data
+    else:
+        job.parsed_recipe = updated_recipe_data
+    
+    # Mark the field as modified to ensure SQLAlchemy detects the change
+    from sqlalchemy.orm.attributes import flag_modified
+    if job.adapted_recipe:
+        flag_modified(job, "adapted_recipe")
+    else:
+        flag_modified(job, "parsed_recipe")
+    
+    session.flush()  # Ensure changes are detected
+    session.commit()
+    session.refresh(job)
+    capture_event("recipe_rated", properties={
+        "import_id": str(import_id),
+        "rating": payload.rating,
+    })
+    return job

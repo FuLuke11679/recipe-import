@@ -200,10 +200,12 @@ def _stub_extract_recipe(text: str) -> Dict:
     if not steps:
         steps = [{"order": 1, "instruction": "Follow the recipe instructions from the source."}]
     
+    # Stub extractor doesn't calculate nutrition - return None
     return Recipe(
         title=title,
         ingredients=ingredients,
         steps=steps,
+        nutrition=None,
     ).model_dump()
 
 
@@ -244,7 +246,33 @@ Return a valid JSON object matching this exact schema:
   ],
   "servings": number | null (optional),
   "total_time_minutes": number | null (optional),
-  "source_url": string | null (optional)
+  "source_url": string | null (optional),
+  "nutrition": {
+    "calories_per_serving": number | null (REQUIRED - estimate based on ingredients),
+    "total_calories": number | null (REQUIRED if servings not specified),
+    "protein_g": number | null (REQUIRED - estimate in grams),
+    "carbohydrates_g": number | null (REQUIRED - estimate in grams),
+    "fat_g": number | null (REQUIRED - estimate in grams),
+    "fiber_g": number | null (optional),
+    "sugar_g": number | null (optional),
+    "sodium_mg": number | null (optional)
+  }
+}
+
+CRITICAL: The "nutrition" object MUST be included in every response. Calculate estimates based on standard nutritional values for each ingredient.
+
+Example with nutrition:
+{
+  "title": "Simple Pasta",
+  "ingredients": [{"name": "pasta", "quantity": 200, "unit": "g"}, {"name": "butter", "quantity": 2, "unit": "tbsp"}],
+  "steps": [{"order": 1, "instruction": "Cook pasta"}],
+  "servings": 2,
+  "nutrition": {
+    "calories_per_serving": 350,
+    "protein_g": 12,
+    "carbohydrates_g": 50,
+    "fat_g": 15
+  }
 }
 
 IMPORTANT RULES:
@@ -259,7 +287,16 @@ IMPORTANT RULES:
 - Use the transcript to extract detailed cooking steps
 - Use the caption to extract ingredient lists and recipe title
 - Order steps sequentially starting from 1
-- Return ONLY valid JSON, no markdown or extra text."""
+- ALWAYS calculate nutrition information based on the ingredients. This is REQUIRED, not optional:
+  * Estimate calories per serving (or total calories if servings not specified) using standard nutritional values
+  * Calculate macronutrients: protein (g), carbohydrates (g), fat (g) per serving
+  * Estimate fiber (g), sugar (g), and sodium (mg) when possible
+  * Use common nutritional databases values for ingredients (e.g., flour ~364 cal/cup, butter ~1628 cal/cup, chicken ~231 cal/100g)
+  * If servings is specified, provide calories_per_serving; otherwise provide total_calories
+  * The nutrition object MUST be included with at least calories, protein, carbs, and fat values
+  * Example nutrition calculation: For "2 cups flour, 1 cup milk, 2 eggs" → estimate ~728 cal (flour) + ~150 cal (milk) + ~140 cal (eggs) = ~1018 total calories
+- Return ONLY valid JSON, no markdown or extra text.
+- CRITICAL: The "nutrition" field is REQUIRED and must contain estimated values based on ingredients."""
 
     try:
         response = client.chat.completions.create(
@@ -276,9 +313,40 @@ IMPORTANT RULES:
             raise ValueError("Empty response from OpenAI")
 
         recipe_dict = json.loads(content)
+        
+        # Debug: Print raw response to see what LLM returned
+        import sys
+        print(f"\n{'='*60}", file=sys.stderr, flush=True)
+        print(f"LLM EXTRACTION RESULT:", file=sys.stderr, flush=True)
+        print(f"Has nutrition key: {'nutrition' in recipe_dict}", file=sys.stderr, flush=True)
+        print(f"Nutrition value: {recipe_dict.get('nutrition')}", file=sys.stderr, flush=True)
+        print(f"Full recipe keys: {list(recipe_dict.keys())}", file=sys.stderr, flush=True)
+        if "nutrition" in recipe_dict:
+            print(f"Nutrition type: {type(recipe_dict.get('nutrition'))}", file=sys.stderr, flush=True)
+            print(f"Nutrition content: {json.dumps(recipe_dict.get('nutrition'), indent=2)}", file=sys.stderr, flush=True)
+        print(f"{'='*60}\n", file=sys.stderr, flush=True)
+        
+        # Log nutrition data before validation
+        logger.info("recipe_extraction_result", extra={
+            "has_nutrition": "nutrition" in recipe_dict and recipe_dict.get("nutrition") is not None,
+            "nutrition_data": recipe_dict.get("nutrition")
+        })
         # Validate using Pydantic model
         recipe = Recipe.model_validate(recipe_dict)
-        logger.info("recipe_extracted", extra={"title": recipe.title, "ingredients_count": len(recipe.ingredients)})
+        logger.info("recipe_extracted", extra={
+            "title": recipe.title,
+            "ingredients_count": len(recipe.ingredients),
+            "has_nutrition": recipe.nutrition is not None
+        })
+        
+        # Debug: Print after validation
+        print(f"\n{'='*60}", file=sys.stderr, flush=True)
+        print(f"AFTER VALIDATION:", file=sys.stderr, flush=True)
+        print(f"Recipe has nutrition: {recipe.nutrition is not None}", file=sys.stderr, flush=True)
+        if recipe.nutrition:
+            print(f"Nutrition object: {recipe.nutrition.model_dump()}", file=sys.stderr, flush=True)
+        print(f"{'='*60}\n", file=sys.stderr, flush=True)
+        
         return recipe.model_dump()
     except Exception as exc:  # noqa: BLE001
         logger.warning("openai_extract_failed", extra={"error": str(exc), "fallback": "stub"})
@@ -321,6 +389,10 @@ def adapt_recipe(recipe: Recipe, constraints: Constraints) -> Tuple[Dict, str]:
         constraint_parts.append(f"Servings: {constraints.servings}")
     if constraints.allergies:
         constraint_parts.append(f"Allergies to avoid: {constraints.allergies}")
+    if constraints.max_calories_per_serving:
+        constraint_parts.append(f"Maximum calories per serving: {constraints.max_calories_per_serving}")
+    if constraints.min_protein_g:
+        constraint_parts.append(f"Minimum protein per serving: {constraints.min_protein_g}g")
 
     constraints_text = "; ".join(constraint_parts) if constraint_parts else "No specific constraints"
 
@@ -335,6 +407,13 @@ When adapting:
 - For time constraints: simplify steps, combine or remove time-consuming techniques
 - For serving changes: scale ingredient quantities proportionally
 - For allergies: replace or remove problematic ingredients with safe alternatives
+- For calorie limits: reduce high-calorie ingredients, use lower-calorie alternatives, adjust portion sizes
+- For protein goals: increase protein-rich ingredients, add protein sources if needed
+
+Include nutrition information in the recipe when available:
+- Calculate calories per serving and total calories
+- Estimate macronutrients (protein, carbohydrates, fat) in grams
+- Include fiber, sugar, and sodium when possible
 
 Return ONLY valid JSON with "recipe" and "summary" fields."""
 
@@ -360,6 +439,12 @@ Return ONLY valid JSON with "recipe" and "summary" fields."""
         result = json.loads(content)
         adapted_dict = result.get("recipe", {})
         summary = result.get("summary", "Recipe adapted based on constraints.")
+
+        # Log nutrition data
+        logger.info("recipe_adaptation_result", extra={
+            "has_nutrition": "nutrition" in adapted_dict and adapted_dict.get("nutrition") is not None,
+            "nutrition_data": adapted_dict.get("nutrition")
+        })
 
         # Validate adapted recipe
         adapted_recipe = Recipe.model_validate(adapted_dict)

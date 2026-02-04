@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 from typing import Dict, Optional
@@ -108,6 +109,7 @@ async def fetch_oembed(url: str) -> Dict:
     print(f"Headers: x-api-key present: {bool(headers.get('x-api-key'))}", file=sys.stderr, flush=True)
 
     video_data = None
+    full_response = None  # Store full API response to access top-level fields like transcript
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -115,8 +117,11 @@ async def fetch_oembed(url: str) -> Dict:
             # The v2 endpoint accepts the full URL and returns the specific video
             if video_id and resolved_url:
                 video_endpoint = "https://api.scrapecreators.com/v2/tiktok/video"
-                video_params = {"url": resolved_url}
-                print(f"Attempting video-specific endpoint: {video_endpoint} with url={resolved_url}", file=sys.stderr, flush=True)
+                video_params = {
+                    "url": resolved_url,
+                    "get_transcript": "true",  # Get transcript directly in response
+                }
+                print(f"Attempting video-specific endpoint: {video_endpoint} with url={resolved_url}, get_transcript=true", file=sys.stderr, flush=True)
                 
                 try:
                     resp = await client.get(video_endpoint, params=video_params, headers=headers)
@@ -125,6 +130,9 @@ async def fetch_oembed(url: str) -> Dict:
                     if resp.status_code == 200:
                         data = resp.json()
                         print(f"Video endpoint response keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}", file=sys.stderr, flush=True)
+                        
+                        # Store full response to access top-level transcript field
+                        full_response = data
                         
                         # v2 endpoint returns data in aweme_detail field
                         if isinstance(data, dict) and "aweme_detail" in data:
@@ -236,6 +244,30 @@ async def fetch_oembed(url: str) -> Dict:
             # Video endpoint might wrap the data
             video_data = video_data.get("data", video_data)
         
+        # Log full API response structure to inspect available fields (ALWAYS runs)
+        import json
+        try:
+            print(f"\n{'='*60}", file=sys.stderr, flush=True)
+            print(f"FULL API RESPONSE STRUCTURE (video_data):", file=sys.stderr, flush=True)
+            if isinstance(video_data, dict):
+                print(f"Top-level keys: {list(video_data.keys())}", file=sys.stderr, flush=True)
+                # Print full structure (truncated to 5000 chars to avoid overwhelming logs)
+                try:
+                    json_str = json.dumps(video_data, indent=2, default=str)
+                    print(json_str[:5000], file=sys.stderr, flush=True)
+                    if len(json_str) > 5000:
+                        print(f"... (truncated, total length: {len(json_str)} chars)", file=sys.stderr, flush=True)
+                except Exception as json_err:
+                    print(f"Error serializing JSON: {json_err}", file=sys.stderr, flush=True)
+                    print(f"video_data type: {type(video_data)}", file=sys.stderr, flush=True)
+            else:
+                print(f"video_data is not a dict, type: {type(video_data)}", file=sys.stderr, flush=True)
+            print(f"{'='*60}\n", file=sys.stderr, flush=True)
+        except Exception as log_err:
+            print(f"ERROR in logging block: {log_err}", file=sys.stderr, flush=True)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+        
         # Extract caption from desc field
         caption = video_data.get("desc", "").strip()
         author_info = video_data.get("author", {})
@@ -249,35 +281,125 @@ async def fetch_oembed(url: str) -> Dict:
             if cover and cover.get("url_list"):
                 thumbnail_url = cover["url_list"][0] if cover["url_list"] else None
 
-        # Extract transcript from caption_infos (subtitle/transcript data)
+        # Extract transcript - check multiple sources:
+        # 1. Top-level transcript field (if get_transcript parameter was used)
+        # 2. From caption_infos WebVTT URL (fallback)
         transcript = ""
         transcript_url = None
-        cla_info = video_obj.get("cla_info", {}) if video_obj else {}
-        caption_infos = cla_info.get("caption_infos", [])
-        if caption_infos and len(caption_infos) > 0:
-            # Get the first caption info (usually the main transcript)
-            caption_info = caption_infos[0]
-            transcript_url = caption_info.get("url") or (caption_info.get("url_list", [])[0] if caption_info.get("url_list") else None)
-            
-            # Try to fetch transcript content if URL is available
-            if transcript_url:
-                try:
-                    async with httpx.AsyncClient(timeout=10.0) as transcript_client:
-                        transcript_resp = await transcript_client.get(transcript_url)
-                        transcript_resp.raise_for_status()
-                        transcript_content = transcript_resp.text
-                        # Parse WebVTT format - extract text lines (skip headers and timestamps)
-                        lines = transcript_content.split("\n")
-                        transcript_lines = []
-                        for line in lines:
-                            line = line.strip()
-                            # Skip WebVTT headers, timestamps, and empty lines
-                            if line and not line.startswith("WEBVTT") and not line.startswith("NOTE") and "-->" not in line and not line.isdigit():
-                                transcript_lines.append(line)
-                        transcript = " ".join(transcript_lines).strip()
-                except Exception as transcript_exc:  # noqa: BLE001
-                    logger.warning("transcript_fetch_failed", extra={"error": str(transcript_exc), "url": transcript_url})
-                    transcript = ""  # Keep empty if fetch fails
+        
+        # First, try to get transcript from top-level response (if get_transcript was used)
+        if full_response and isinstance(full_response, dict) and "transcript" in full_response:
+            transcript_content = full_response.get("transcript", "")
+            if transcript_content:
+                # Parse WebVTT format - extract text lines (skip headers and timestamps)
+                lines = transcript_content.split("\n")
+                transcript_lines = []
+                for line in lines:
+                    line = line.strip()
+                    # Skip WebVTT headers, timestamps, and empty lines
+                    if line and not line.startswith("WEBVTT") and not line.startswith("NOTE") and "-->" not in line and not line.isdigit():
+                        transcript_lines.append(line)
+                transcript = " ".join(transcript_lines).strip()
+                print(f"Got transcript from top-level response (get_transcript parameter)", file=sys.stderr, flush=True)
+        
+        # Fallback: Extract transcript from caption_infos (subtitle/transcript data)
+        if not transcript:
+            cla_info = video_obj.get("cla_info", {}) if video_obj else {}
+            caption_infos = cla_info.get("caption_infos", [])
+            if caption_infos and len(caption_infos) > 0:
+                # Get the first caption info (usually the main transcript)
+                caption_info = caption_infos[0]
+                transcript_url = caption_info.get("url") or (caption_info.get("url_list", [])[0] if caption_info.get("url_list") else None)
+                
+                # Try to fetch transcript content if URL is available
+                if transcript_url:
+                    try:
+                        async with httpx.AsyncClient(timeout=10.0) as transcript_client:
+                            transcript_resp = await transcript_client.get(transcript_url)
+                            transcript_resp.raise_for_status()
+                            transcript_content = transcript_resp.text
+                            # Parse WebVTT format - extract text lines (skip headers and timestamps)
+                            lines = transcript_content.split("\n")
+                            transcript_lines = []
+                            for line in lines:
+                                line = line.strip()
+                                # Skip WebVTT headers, timestamps, and empty lines
+                                if line and not line.startswith("WEBVTT") and not line.startswith("NOTE") and "-->" not in line and not line.isdigit():
+                                    transcript_lines.append(line)
+                            transcript = " ".join(transcript_lines).strip()
+                    except Exception as transcript_exc:  # noqa: BLE001
+                        logger.warning("transcript_fetch_failed", extra={"error": str(transcript_exc), "url": transcript_url})
+                        transcript = ""  # Keep empty if fetch fails
+        
+        # Extract on-screen text (text that appears written on the video)
+        on_screen_text = ""
+        
+        # DEBUG: Log what fields we're checking for on-screen text
+        print(f"\n{'='*60}", file=sys.stderr, flush=True)
+        print(f"DEBUG: Checking for on-screen text in API response...", file=sys.stderr, flush=True)
+        print(f"video_data keys: {list(video_data.keys())[:20] if isinstance(video_data, dict) else 'not a dict'}", file=sys.stderr, flush=True)
+        
+        # Check video_text field
+        video_text_list = video_data.get("video_text", [])
+        print(f"video_text field exists: {video_text_list is not None}", file=sys.stderr, flush=True)
+        print(f"video_text type: {type(video_text_list)}", file=sys.stderr, flush=True)
+        if isinstance(video_text_list, list):
+            print(f"video_text length: {len(video_text_list)}", file=sys.stderr, flush=True)
+            if len(video_text_list) > 0:
+                print(f"video_text[0] type: {type(video_text_list[0])}", file=sys.stderr, flush=True)
+                print(f"video_text[0] content: {str(video_text_list[0])[:200]}", file=sys.stderr, flush=True)
+        
+        if video_text_list and isinstance(video_text_list, list) and len(video_text_list) > 0:
+            # video_text is an array of text objects that appear on screen
+            on_screen_text_parts = []
+            for idx, text_item in enumerate(video_text_list):
+                print(f"Processing video_text[{idx}]: type={type(text_item)}", file=sys.stderr, flush=True)
+                if isinstance(text_item, dict):
+                    # Extract text content from the text object
+                    text_content = text_item.get("text") or text_item.get("content") or str(text_item)
+                    print(f"  video_text[{idx}] keys: {list(text_item.keys())[:10]}", file=sys.stderr, flush=True)
+                    print(f"  video_text[{idx}] extracted text: {text_content[:100] if text_content else 'None'}", file=sys.stderr, flush=True)
+                    if text_content:
+                        on_screen_text_parts.append(text_content)
+                elif isinstance(text_item, str):
+                    print(f"  video_text[{idx}] is string: {text_item[:100]}", file=sys.stderr, flush=True)
+                    on_screen_text_parts.append(text_item)
+            on_screen_text = "\n".join(on_screen_text_parts)
+            print(f"Extracted from video_text: {len(on_screen_text)} characters", file=sys.stderr, flush=True)
+        
+        # Also check text_extra and original_client_text fields for additional text overlays
+        text_extra = video_data.get("text_extra", [])
+        print(f"text_extra field exists: {text_extra is not None}", file=sys.stderr, flush=True)
+        print(f"text_extra type: {type(text_extra)}, length: {len(text_extra) if isinstance(text_extra, list) else 'N/A'}", file=sys.stderr, flush=True)
+        if isinstance(text_extra, list) and len(text_extra) > 0:
+            print(f"text_extra[0] type: {type(text_extra[0])}", file=sys.stderr, flush=True)
+            print(f"text_extra[0] content: {str(text_extra[0])[:200]}", file=sys.stderr, flush=True)
+        
+        original_client_text = video_data.get("original_client_text", {})
+        print(f"original_client_text field exists: {original_client_text is not None}", file=sys.stderr, flush=True)
+        print(f"original_client_text type: {type(original_client_text)}", file=sys.stderr, flush=True)
+        if isinstance(original_client_text, dict):
+            print(f"original_client_text keys: {list(original_client_text.keys())}", file=sys.stderr, flush=True)
+            if "markup_text" in original_client_text:
+                markup_preview = original_client_text.get("markup_text", "")[:200]
+                print(f"original_client_text.markup_text preview: {markup_preview}", file=sys.stderr, flush=True)
+        
+        # Extract text from original_client_text.markup_text if available
+        if original_client_text and isinstance(original_client_text, dict):
+            markup_text = original_client_text.get("markup_text", "")
+            if markup_text and not on_screen_text:
+                # markup_text might contain formatted text with mentions/hashtags
+                # Extract plain text (remove markup tags like <m id="1">)
+                import re
+                plain_text = re.sub(r'<[^>]+>', '', markup_text)
+                print(f"Extracted plain text from markup_text: {len(plain_text)} characters", file=sys.stderr, flush=True)
+                print(f"Plain text preview: {plain_text[:200]}", file=sys.stderr, flush=True)
+                if plain_text and plain_text != caption:
+                    on_screen_text = plain_text
+                    print(f"Using markup_text as on_screen_text", file=sys.stderr, flush=True)
+        
+        print(f"Final on_screen_text length: {len(on_screen_text)} characters", file=sys.stderr, flush=True)
+        print(f"{'='*60}\n", file=sys.stderr, flush=True)
 
         result = {
             "title": caption[:100] if caption else "TikTok Video",  # Use caption as title if available
@@ -285,14 +407,15 @@ async def fetch_oembed(url: str) -> Dict:
             "provider_name": "tiktok",
             "description": caption,
             "caption": caption,  # The main caption text
-            "transcript": transcript,  # The full transcript/subtitle text
+            "transcript": transcript,  # The full transcript/subtitle text (spoken audio)
+            "on_screen_text": on_screen_text,  # Text that appears written on the video
             "transcript_url": transcript_url,  # URL to transcript file if available
             "thumbnail_url": thumbnail_url,
             "html": "",
             "url": url,
         }
 
-        # Log caption and transcript to terminal for testing (force to stderr for Docker logs)
+        # Log caption, transcript, and on-screen text to terminal for testing (force to stderr for Docker logs)
         import sys
         print(f"\n{'='*60}", file=sys.stderr, flush=True)
         print(f"TikTok Data Extracted:", file=sys.stderr, flush=True)
@@ -302,12 +425,19 @@ async def fetch_oembed(url: str) -> Dict:
         print(f"{caption}", file=sys.stderr, flush=True)
         print(f"Caption Length: {len(caption)} characters", file=sys.stderr, flush=True)
         if transcript:
-            print(f"\n--- TRANSCRIPT ---", file=sys.stderr, flush=True)
+            print(f"\n--- TRANSCRIPT (Spoken Audio) ---", file=sys.stderr, flush=True)
             print(f"{transcript}", file=sys.stderr, flush=True)
             print(f"Transcript Length: {len(transcript)} characters", file=sys.stderr, flush=True)
         else:
-            print(f"\n--- TRANSCRIPT ---", file=sys.stderr, flush=True)
+            print(f"\n--- TRANSCRIPT (Spoken Audio) ---", file=sys.stderr, flush=True)
             print("No transcript available", file=sys.stderr, flush=True)
+        if on_screen_text:
+            print(f"\n--- ON-SCREEN TEXT (Written on Video) ---", file=sys.stderr, flush=True)
+            print(f"{on_screen_text}", file=sys.stderr, flush=True)
+            print(f"On-Screen Text Length: {len(on_screen_text)} characters", file=sys.stderr, flush=True)
+        else:
+            print(f"\n--- ON-SCREEN TEXT (Written on Video) ---", file=sys.stderr, flush=True)
+            print("No on-screen text found", file=sys.stderr, flush=True)
         print(f"{'='*60}\n", file=sys.stderr, flush=True)
 
         logger.info(
