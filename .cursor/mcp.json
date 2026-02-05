@@ -1,0 +1,15 @@
+{
+    "mcpServers": {
+      "RapidAPI Hub - TikTok Transcript Generator": {
+        "command": "npx",
+        "args": [
+          "mcp-remote",
+          "https://mcp.rapidapi.com",
+          "--header",
+          "x-api-host: tiktok-transcript-generator.p.rapidapi.com",
+          "--header",
+          "x-api-key: 24d5d09d4fmsh821d458f3ff5154p19561ajsn633628cfebb0"
+        ]
+      }
+    }
+  }
